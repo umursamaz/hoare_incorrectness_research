@@ -1,4 +1,5 @@
-import Hoare_Defs
+import Hoare.Defs
+namespace Hoare
 
 -- The Sequence Rule
 -- {P} S {Q}   {Q} T {R}
@@ -34,3 +35,5 @@ theorem seq_intro {P Q R : State → Prop}
     -- So, R must hold in state u.
     have hR := hT t u hQ hT_exec
     exact hR
+
+end Hoare

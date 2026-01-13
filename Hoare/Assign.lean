@@ -1,4 +1,5 @@
-import Hoare_Defs
+import Hoare.Defs
+namespace Hoare
 
 -- The Assignment Rule
 -- {P[x ↦ a]} x := a {P}
@@ -16,3 +17,4 @@ theorem assign_intro {P : State → Prop}
   intro s t hP hStep
   cases hStep
   exact hP
+end Hoare

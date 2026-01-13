@@ -1,10 +1,6 @@
 import Lake
 open Lake DSL
 
-package «projem» where
-  -- Paket ayarları
+package hoare_incorrectness
 
-@[default_target]
-lean_lib «Projem» where
-  srcDir := "."
-  roots := #[`Language, `Hoare_Defs]
+lean_lib Hoare

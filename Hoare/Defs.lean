@@ -1,4 +1,5 @@
-import Language
+import Hoare.Language
+namespace Hoare
 
 -- Partial Correctness Hoare Triple Definition
 -- {P} S {Q} holds if whenever we start in a state satisfying P,
@@ -12,3 +13,5 @@ def PartialHoare (P : State → Prop)
 -- Allows writing {* P *} (S) {* Q *}
 notation "{* " P " *} " "(" S ")" " {* " Q " *}"
 => PartialHoare P S Q
+
+end Hoare

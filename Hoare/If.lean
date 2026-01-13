@@ -1,4 +1,5 @@
-import Hoare_Defs
+import Hoare.Defs
+namespace Hoare
 
 -- The Conditional Rule (If-Then-Else)
 --
@@ -44,3 +45,5 @@ theorem if_intro {B P Q: State → Prop}
     have hPre : P s ∧ ¬ B s := And.intro hP hCond
     have hResult := hT s t hPre hBody
     exact hResult
+
+end Hoare

@@ -1,4 +1,5 @@
-import Hoare_Defs
+import Hoare.Defs
+namespace Hoare
 
 -- The Skip Rule
 -- {P} skip {P}
@@ -14,3 +15,5 @@ theorem skip_intro {P : State → Prop} :
   intro s t hP hStep
   cases hStep
   exact hP
+
+end Hoare
