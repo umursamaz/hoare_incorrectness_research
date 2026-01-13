@@ -22,13 +22,8 @@ theorem if_intro {B P Q: State → Prop}
   -- hP: Precondition P holds in s
   -- hStep: The 'if' statement executed from s to t
   intro s t hP hStep
-
-  -- 2. Cases Step (The Fork):
-  -- How did the 'if' statement execute?
-  -- BigStep has two rules for if: 'if_true' and 'if_false'.
-  -- 'cases' splits our proof into these two possibilities.
   cases hStep with
-  -- Case 1: B was true, executed S (hBody)
+
   | if_true _ _ _ _ _ hCond hBody =>
     -- We need to prove Q t.
     -- Use the hypothesis hS (behavior of S).
@@ -37,7 +32,6 @@ theorem if_intro {B P Q: State → Prop}
     have hResult := hS s t hPre hBody
     exact hResult
 
-  -- Case 2: B was false, executed T (hBody)
   | if_false _ _ _ _ _ hCond hBody =>
     -- We need to prove Q t.
     -- Use the hypothesis hT (behavior of T).
