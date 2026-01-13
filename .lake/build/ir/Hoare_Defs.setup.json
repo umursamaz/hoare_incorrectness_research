@@ -1,0 +1,8 @@
+{"plugins": [],
+ "options": {},
+ "name": "Hoare_Defs",
+ "isModule": false,
+ "importArts":
+ {"Language":
+  ["G:\\My Drive\\Years\\6\\Fall\\Tez\\Lean\\hoare_incorrectness_research\\.lake\\build\\lib\\lean\\Language.olean"]},
+ "dynlibs": []}
