@@ -1,4 +1,5 @@
 import Hoare.Defs
+open Language
 namespace Hoare
 -- The While Rule (Loop Invariant)
 --

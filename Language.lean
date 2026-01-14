@@ -1,6 +1,6 @@
 import Lean
 
-namespace Hoare
+namespace Language
 -- 1. State Definition
 -- States map variable names (Strings) to values (Natural Numbers).
 def State := String → Nat
@@ -55,4 +55,4 @@ inductive BigStep : Stmt × State → State → Prop where
 -- Notation for BigStep semantics
 infix:110 " ⟹ " => BigStep
 
-end Hoare
+end Language
