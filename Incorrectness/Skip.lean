@@ -16,7 +16,7 @@ theorem skip_intro {P : State → Prop} :
   exists t
   apply And.intro
 
-  · exact hP
-  · exact BigStep.skip t
+  exact hP
+  exact BigStep.skip t
 
 end Incorrectness
