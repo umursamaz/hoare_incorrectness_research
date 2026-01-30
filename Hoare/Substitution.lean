@@ -9,8 +9,10 @@ theorem substitution_lemma {P : State → Prop}
     (h : t = s[x ↦ e s])
     : P (s[x ↦ e s]) → P t :=
   by
-  intro h
-  exact h
+  intro hP
+  -- rw [h]
+  exact h ▸ hP
+
 
 theorem assign_intro' {P : State → Prop}
     {x : String}
@@ -19,6 +21,6 @@ theorem assign_intro' {P : State → Prop}
   by
   intro s t hP hStep
   cases hStep
-  exact hP
+  exact substitution_lemma rfl hP
 
 end Hoare
