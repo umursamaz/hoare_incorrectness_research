@@ -3,63 +3,30 @@ open Language
 namespace Incorrectness
 
 -- The Conditional Rule (If-Then-Else)
+-- THEN:                            ELSE:
+--      ⟨P ∧ b⟩ c₀ ⟨Q⟩                       ⟨P ∧ ¬b⟩ c₁ ⟨Q⟩
+--   ──────────────────────             ──────────────────────
+-- ⟨P⟩ if b then c₀ else c₁ ⟨Q⟩       ⟨P⟩ if b then c₀ else c₁ ⟨Q⟩
 --
---        [P ∧ B] S [Q]    [P ∧ ¬B] T [Q]
--- -------------------------------------------
---        [P] if B then S else T [Q]
 
-theorem if_intro {P Q1 Q2 : State → Prop}
+
+theorem if_then {P Q : State → Prop}
     {B : State → Prop}
     {S1 S2 : Stmt}
-  (h1 : [* fun s => P s ∧ B s *] (S1) [* Q1 *])
-  (h2 : [* fun s => P s ∧ ¬B s *] (S2) [* Q2 *]) :
-  [* P *] (Stmt.ifThenElse B S1 S2) [* fun t => Q1 t ∨ Q2 t *] :=
-  by
-  -- Introduce variables and hypotheses
-  -- t: final state
-  -- h_post: hypothesis that the postcondition holds in state t
-  intro t h_post
+    (h : [* fun s => P s ∧ B s *] (S1) [* Q *]) :
+    [* P *] (Stmt.ifThenElse B S1 S2) [* Q *] := by
+  intro t hQ
+  obtain ⟨s, hS⟩ := h t hQ
+  exact ⟨s, hS.1.1, BigStep.if_true B S1 S2 s t hS.1.2 hS.2⟩
 
-  cases h_post with
-  -- CASE 1: The TRUE Branch (S1 executed)
-  | inl hQ1 =>
-    -- Use hypothesis h1 to find the start state 's'
-    -- h1 says: If we are in Q1, we came from 's' where (P s ∧ B s).
-    have h1_unfolded := h1 t hQ1
-    cases h1_unfolded with
-    -- s : The initial state
-    -- h_start : (P s ∧ B s) and (S1, s) executes to t
-    | intro s h_start =>
-      cases h_start with
-      -- hPre1  : (P s ∧ B s)
-      -- hExec1 : (S1, s) executes to t
-      | intro hPre1 hExec1 =>
-        exists s
-        apply And.intro
-        exact hPre1.left
+theorem if_else {P Q : State → Prop}
+    {B : State → Prop}
+    {S1 S2 : Stmt}
+    (h : [* fun s => P s ∧ ¬B s *] (S2) [* Q *]) :
+    [* P *] (Stmt.ifThenElse B S1 S2) [* Q *] := by
+  intro t hQ
+  obtain ⟨s,hS⟩ := h t hQ
+  exact ⟨s, hS.1.1, BigStep.if_false B S1 S2 s t hS.1.2 hS.2⟩
 
-        apply BigStep.if_true B S1 S2 s t
-        exact hPre1.right -- Proof that condition B is true
-        exact hExec1      -- Proof that S1 executes to t
 
-  -- CASE 2: The FALSE Branch (S2 executed)
-  | inr hQ2 =>
-    -- Use hypothesis h2 to find the start state 's'
-    -- h2 says: If we are in Q2, we came from 's' where (P s ∧ ¬B s).
-    have h2_unfolded := h2 t hQ2
-    cases h2_unfolded with
-    -- s : The initial state
-    -- h_start : (P s ∧ ¬B s) and (S2, s) executes to t
-    | intro s h_start =>
-      cases h_start with
-      -- hPre2  : (P s ∧ ¬B s)
-      -- hExec2 : (S2, s) executes to t
-      | intro hPre2 hExec2 =>
-        exists s
-        apply And.intro
-        exact hPre2.left
-
-        apply BigStep.if_false B S1 S2 s t
-        exact hPre2.right -- Proof that condition B is false (¬B)
-        exact hExec2      -- Proof that S2 executes to t
-end Incorrectness
+-- end Incorrectness
