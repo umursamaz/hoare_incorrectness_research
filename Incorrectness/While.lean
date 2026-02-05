@@ -27,3 +27,5 @@ theorem while_intro {P : State → Prop}
     exact hP
     apply BigStep.while_false
     exact hNotB
+
+end Incorrectness

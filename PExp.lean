@@ -15,6 +15,8 @@ inductive PExp : Type where
   | not   : PExp → PExp             -- ¬p
   | and   : PExp → PExp → PExp      -- p ∧ q
   | or    : PExp → PExp → PExp      -- p ∨ q
+  | implies : PExp → PExp → PExp      -- p ⇒ q
+
 
 -- PExp evaluation: PExp → State → Prop
 def PExp.eval (p : PExp) (s : State) : Prop :=
@@ -29,7 +31,7 @@ def PExp.eval (p : PExp) (s : State) : Prop :=
   | .not p => ¬(p.eval s)
   | .and p q => p.eval s ∧ q.eval s
   | .or p q => p.eval s ∨ q.eval s
-
+  | .implies p q => p.eval s → q.eval s
 
 def PExp.subst (p : PExp) (x : String) (a : AExp) : PExp :=
   match p with
@@ -43,6 +45,7 @@ def PExp.subst (p : PExp) (x : String) (a : AExp) : PExp :=
   | .not p => .not (p.subst x a)
   | .and p q => .and (p.subst x a) (q.subst x a)
   | .or p q => .or (p.subst x a) (q.subst x a)
+  | .implies p q => .implies (p.subst x a) (q.subst x a)
 
 theorem PExp.subst_lemma (p : PExp) (a : AExp) (x : String) (s : State) :
     (p.subst x a).eval s ↔ p.eval (s[x ↦ a.eval s]) := by
@@ -64,6 +67,8 @@ theorem PExp.subst_lemma (p : PExp) (a : AExp) (x : String) (s : State) :
   | and p q ihp ihq =>
     simp [PExp.subst, PExp.eval, ihp, ihq]
   | or p q ihp ihq =>
+    simp [PExp.subst, PExp.eval, ihp, ihq]
+  | implies p q ihp ihq =>
     simp [PExp.subst, PExp.eval, ihp, ihq]
 
 end Language
