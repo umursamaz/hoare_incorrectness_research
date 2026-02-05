@@ -29,4 +29,4 @@ theorem if_else {P Q : State → Prop}
   exact ⟨s, hS.1.1, BigStep.if_false B S1 S2 s t hS.1.2 hS.2⟩
 
 
--- end Incorrectness
+end Incorrectness
