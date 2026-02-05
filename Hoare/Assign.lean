@@ -1,4 +1,5 @@
 import Hoare.Defs
+import PExp
 open Language
 namespace Hoare
 
@@ -18,4 +19,14 @@ theorem assign_intro {P : State → Prop}
   intro s t hP hStep
   cases hStep
   exact hP
+
+-- PExp-specific assignment rule
+theorem assign_intro_pexp {p : Language.PExp} {x : String} {a : Language.AExp} :
+    {* fun s => (p.subst x a).eval s *}
+    (Language.Stmt.assign x (fun s => a.eval s))
+    {* fun s => p.eval s *} := by
+  intro s t hPre hStep
+  cases hStep
+  rw [← Language.PExp.subst_lemma]
+  exact hPre
 end Hoare
