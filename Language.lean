@@ -19,6 +19,7 @@ inductive Stmt : Type where
   | seq        : Stmt → Stmt → Stmt
   | ifThenElse : (State → Prop) → Stmt → Stmt → Stmt
   | whileDo    : (State → Prop) → Stmt → Stmt
+  | assert : (State → Prop) → Stmt
 
 infixr:90 "; " => Stmt.seq
 
@@ -51,6 +52,9 @@ inductive BigStep : Stmt × State → State → Prop where
   | while_false (B S s)
         (hcond : ¬ B s) :
       BigStep (Stmt.whileDo B S, s) s
+  | assert (B s)
+      (hcond : B s) :
+    BigStep (Stmt.assert B, s) s
 
 -- Notation for BigStep semantics
 infix:110 " ⟹ " => BigStep

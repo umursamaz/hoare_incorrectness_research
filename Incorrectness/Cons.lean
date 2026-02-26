@@ -16,8 +16,6 @@ theorem consequence
     (hQ : ∀ s, Q s → Q' s)
     : [* P *] (S) [* Q *] := by
   intro t hQt
-  -- hQt : Q t
-  -- We need: ∃ s, P s ∧ (S, s) ⟹ t
   have hQ't : Q' t := hQ t hQt
   have ⟨s, hP's, hExec⟩ := hTriple t hQ't
   exact ⟨s, hP s hP's, hExec⟩

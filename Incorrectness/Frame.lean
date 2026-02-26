@@ -7,9 +7,7 @@ namespace Incorrectness
 --        ⟨P⟩ c ⟨Q⟩
 -- ─────────────────────────────
 --     ⟨P ∧ R⟩ c ⟨Q ∧ R⟩
---
--- (provided no variable free in R is modified by c)
--- We take frame preservation as a hypothesis
+
 
 theorem frame
     {P Q R : State → Prop}
