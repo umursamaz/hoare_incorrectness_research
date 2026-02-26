@@ -200,31 +200,6 @@ theorem test_example :
     · -- (assert(x>=2), t) ⟹ t
       exact BigStep.assert (fun s => s "x" ≥ 2) t hXge
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 -- -- Example 1: Simple assignment x := 5
 -- -- [true] x := 5 [x = 5]
 -- example : [* fun _ => True *]
