@@ -1,4 +1,6 @@
 import Incorrectness.Defs
+import Incorrectness.Cons
+import Incorrectness.While
 import Language
 
 open Language
@@ -100,6 +102,71 @@ def sp (c : Stmt) (p : State → Prop) : State → Prop :=
 
 @[simp] theorem sp_assert' :
     sp (Stmt.assert B) p = p := rfl
+
+-- ============================================
+-- SP Assignment Elimination (for automation)
+-- ============================================
+
+/-- **Key reformulation for automation.**
+  Converts existential over `State` to existential over `Nat`:
+  - LHS: `∃ s : State, p s ∧ t = s[x ↦ a s]`  (hard to solve: need full state witness)
+  - RHS: `∃ v : Nat, p(t[x↦v]) ∧ t x = a(t[x↦v])`  (easy: just find old value of x)
+
+  After `simp [State.update]`, RHS becomes pure Nat arithmetic that
+  `simp_all` + `omega` can close automatically. -/
+theorem sp_assign_elim {p : State → Prop} {x : String} {a : State → Nat} {t : State} :
+    (∃ s, p s ∧ t = s[x ↦ a s]) ↔ ∃ v, p (t[x ↦ v]) ∧ t x = a (t[x ↦ v]) := by
+  constructor
+  · rintro ⟨s, hp, heq⟩
+    subst heq
+    refine ⟨s x, ?_, ?_⟩
+    · rwa [state_update_override, state_update_same]
+    · simp only [state_update_eq, state_update_override, state_update_same]
+  · rintro ⟨v, hp, heq⟩
+    exact ⟨t[x ↦ v], hp, by
+      funext _y; simp only [State.update]; split <;> simp_all⟩
+
+/-- Direct simp lemma: unfolds `sp (assign x a) p` to Nat-existential form.
+    Use this INSTEAD of `sp_assign'` in automation — avoids the intermediate
+    `∃ s : State` form that's hard for `simp_all` to close. -/
+@[simp] theorem sp_assign_nat {p : State → Prop} {x : String} {a : State → Nat} :
+    sp (Stmt.assign x a) p = fun t => ∃ v, p (t[x ↦ v]) ∧ t x = a (t[x ↦ v]) := by
+  funext t; exact propext sp_assign_elim
+
+-- Helper lemmas: eliminate `∃ v : Nat` in various forms
+
+theorem exists_nat_const {p : Prop} : (∃ _ : Nat, p) ↔ p :=
+  ⟨fun ⟨_, h⟩ => h, fun h => ⟨0, h⟩⟩
+
+-- Eliminate when v is determined by an equation
+theorem exists_nat_eq_and {p : Nat → Prop} {a : Nat} :
+    (∃ v, v = a ∧ p v) ↔ p a := ⟨fun ⟨_, rfl, hp⟩ => hp, fun hp => ⟨a, rfl, hp⟩⟩
+
+theorem exists_nat_and_eq {p : Nat → Prop} {a : Nat} :
+    (∃ v, p v ∧ v = a) ↔ p a := ⟨fun ⟨_, hp, rfl⟩ => hp, fun hp => ⟨a, hp, rfl⟩⟩
+
+theorem exists_nat_eq_and' {p : Nat → Prop} {a : Nat} :
+    (∃ v, a = v ∧ p v) ↔ p a := ⟨fun ⟨_, rfl, hp⟩ => hp, fun hp => ⟨a, rfl, hp⟩⟩
+
+theorem exists_nat_and_eq' {p : Nat → Prop} {a : Nat} :
+    (∃ v, p v ∧ a = v) ↔ p a := ⟨fun ⟨_, hp, rfl⟩ => hp, fun hp => ⟨a, hp, rfl⟩⟩
+
+-- Eliminate when v appears in v + k (common from x := x + 1)
+theorem exists_and_eq_add {p : Nat → Prop} {n k : Nat} :
+    (∃ v, p v ∧ n = v + k) ↔ n ≥ k ∧ p (n - k) := by
+  constructor
+  · rintro ⟨v, hp, heq⟩
+    exact ⟨by omega, by rwa [show n - k = v from by omega]⟩
+  · rintro ⟨hge, hp⟩
+    exact ⟨n - k, hp, by omega⟩
+
+theorem exists_and_add_eq {p : Nat → Prop} {n k : Nat} :
+    (∃ v, p v ∧ v + k = n) ↔ n ≥ k ∧ p (n - k) := by
+  constructor
+  · rintro ⟨v, hp, heq⟩
+    exact ⟨by omega, by rwa [show n - k = v from by omega]⟩
+  · rintro ⟨hge, hp⟩
+    exact ⟨n - k, hp, by omega⟩
 
 -- ============================================
 -- Soundness Theorem
@@ -269,5 +336,31 @@ theorem vc_while_sound {b : State → Prop} {c : Stmt} {k : Nat}
     [* p *] (Stmt.whileDo b c) [* q *] := by
   apply unroll_sound b c k p q
   exact vc_sound hvc
+
+-- ============================================
+-- Invariant-Based While Loop VC
+-- ============================================
+
+/-- **Invariant-based VC for while loops.**
+
+  Alternative to bounded unrolling: the user provides an indexed
+  invariant `Inv : Nat → State → Prop` and proves three VCs:
+
+  1. `hPre`:  Inv 0 ⊆ P  (initial invariant within precondition)
+  2. `hBody`: ∀ i, Inv(i+1) ⇒ sp(S, Inv i ∧ B)  (body preserves invariant)
+  3. `hPost`: Q ⊆ (¬B ∧ ∃ i, Inv i)  (postcondition within exit states)
+
+  **Key advantage over bounded unrolling**: the body VC is proved
+  *once for all i*, so proof size is constant regardless of iteration count.
+  This also handles loops with a parametric bound (e.g., `while x < n`),
+  which bounded unrolling cannot express. -/
+theorem vc_while_inv_sound
+    {B : State → Prop} {S : Stmt}
+    {P Q : State → Prop} {Inv : Nat → State → Prop}
+    (hPre : ∀ s, Inv 0 s → P s)
+    (hBody : ∀ i, ∀ t, Inv (i + 1) t → sp S (fun s => Inv i s ∧ B s) t)
+    (hPost : ∀ t, Q t → ¬B t ∧ ∃ i, Inv i t) :
+    [* P *] (Stmt.whileDo B S) [* Q *] :=
+  consequence hPre (while_intro_paper (fun i => vc_sound (hBody i))) hPost
 
 end Incorrectness

@@ -7,5 +7,6 @@
 *.swp
 *.tmp
 .vscode/
+.claude/
 
 proposal.tex
