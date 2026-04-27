@@ -1,6 +1,4 @@
 import Incorrectness.Defs
-import Incorrectness.Cons
-import Incorrectness.While
 import Language
 
 open Language
@@ -70,7 +68,14 @@ theorem state_update_neq (s : State) (x y : String) (v : Nat)
   - if: disjunction of branches
   - assume B: filter by B
   - assert B: state unchanged (both ok/er paths preserve state)
-  - while: conservative False (use bounded unrolling separately) -/
+  - while B S: states reachable from p via the loop's big-step semantics
+
+  The while clause is the *semantic* SP: the exact reachability set defined
+  via BigStep. This makes `sp` an honest specification for every construct
+  (no `False` placeholder). To discharge a while VC in practice, use the
+  helper theorems in `Incorrectness.While` (`vc_while_sound` for bounded
+  unrolling, `vc_while_inv_sound` for indexed invariant), which produce the
+  IL triple directly without ever needing to compute this clause symbolically. -/
 def sp (c : Stmt) (p : State → Prop) : State → Prop :=
   match c with
   | Stmt.skip => p
@@ -81,7 +86,7 @@ def sp (c : Stmt) (p : State → Prop) : State → Prop :=
              ∨ sp c2 (fun s => p s ∧ ¬b s) t
   | Stmt.assume B => fun s => p s ∧ B s
   | Stmt.assert _ => p
-  | Stmt.whileDo _ _ => fun _ => False
+  | Stmt.whileDo B S => fun t => ∃ s, p s ∧ (Stmt.whileDo B S, s) ⟹ t
 
 -- Simp lemmas for unfolding sp in proofs
 @[simp] theorem sp_skip' : sp Stmt.skip p = p := rfl
@@ -102,6 +107,10 @@ def sp (c : Stmt) (p : State → Prop) : State → Prop :=
 
 @[simp] theorem sp_assert' :
     sp (Stmt.assert B) p = p := rfl
+
+@[simp] theorem sp_whileDo' :
+    sp (Stmt.whileDo B S) p
+    = fun t => ∃ s, p s ∧ (Stmt.whileDo B S, s) ⟹ t := rfl
 
 -- ============================================
 -- SP Assignment Elimination (for automation)
@@ -236,9 +245,10 @@ theorem sp_sound (c : Stmt) (p : State → Prop) :
     | inr hnb => exact ⟨t, hp, BigStep.assert_er B t hnb⟩
 
   | whileDo b c _ih =>
-    -- sp (while b c) p = False (conservative)
-    intro t hf
-    exact False.elim hf
+    -- sp (while b c) p t = ∃ s, p s ∧ (while b c, s) ⟹ t
+    -- The IL triple goal unfolds to the same shape, so the witness is direct.
+    intro t ⟨s, hp, hexec⟩
+    exact ⟨s, hp, hexec⟩
 
 -- ============================================
 -- VC Soundness (Main User-Facing Theorem)
@@ -264,103 +274,5 @@ theorem vc_sound {c : Stmt} {p q : State → Prop}
     [* p *] (c) [* q *] := by
   intro t hq
   exact sp_sound c p t (hvc t hq)
-
--- ============================================
--- Bounded Loop Unrolling (for while)
--- ============================================
-
-/-- Unroll a while loop k times as a finite statement.
-  unroll_while b c 0 = assume(¬b)                        (exit immediately)
-  unroll_while b c (k+1) = if b then (c; unroll k) else skip  (one more iteration) -/
-def unroll_while (b : State → Prop) (c : Stmt) : Nat → Stmt
-  | 0 => Stmt.assume (fun s => ¬ b s)
-  | n + 1 => Stmt.ifThenElse b
-               (Stmt.seq c (unroll_while b c n))
-               Stmt.skip
-
-/-- SP for bounded loop unrolling.
-  Computes the disjunction of sp's for 0, 1, ..., k iterations. -/
-def sp_while_bounded (b : State → Prop) (c : Stmt)
-    (p : State → Prop) (bound : Nat) : State → Prop :=
-  match bound with
-  | 0 => sp (unroll_while b c 0) p
-  | n + 1 => fun t => sp_while_bounded b c p n t
-                     ∨ sp (unroll_while b c (n + 1)) p t
-
--- ============================================
--- Bounded Loop Unrolling Soundness
--- ============================================
-
-/-- Key lemma: any execution of unroll_while b c k corresponds to
-    an actual execution of while b do c. Proved by induction on k. -/
-theorem unroll_bigstep (b : State → Prop) (c : Stmt) :
-    ∀ k s t, (unroll_while b c k, s) ⟹ t → (Stmt.whileDo b c, s) ⟹ t := by
-  intro k
-  induction k with
-  | zero =>
-    intro s t h
-    -- unroll_while b c 0 = assume(¬b)
-    -- So h : (assume(¬b), s) ⟹ t, meaning ¬b s and t = s
-    cases h with
-    | assume _ _ hcond => exact BigStep.while_false b c s hcond
-  | succ k ih =>
-    intro s t h
-    -- unroll_while b c (k+1) = if b then (c; unroll k) else skip
-    cases h with
-    | if_true _ _ _ _ _ hcond hbody =>
-      -- b s holds, hbody : (c; unroll k, s) ⟹ t
-      cases hbody with
-      | seq _ _ _ mid _ hc hunroll =>
-        -- hc : (c, s) ⟹ mid, hunroll : (unroll k, mid) ⟹ t
-        exact BigStep.while_true b c s mid t hcond hc (ih mid t hunroll)
-    | if_false _ _ _ _ _ hcond hbody =>
-      -- ¬b s, hbody : (skip, s) ⟹ t
-      cases hbody with
-      | skip _ => exact BigStep.while_false b c s hcond
-
-/-- Transfer theorem: IL triples for unrolled loops transfer to the actual while loop.
-    If we can prove [* p *] (unroll k) [* q *], then [* p *] (while b c) [* q *]. -/
-theorem unroll_sound (b : State → Prop) (c : Stmt) (k : Nat)
-    (p q : State → Prop)
-    (h : [* p *] (unroll_while b c k) [* q *]) :
-    [* p *] (Stmt.whileDo b c) [* q *] := by
-  intro t hq
-  obtain ⟨s, hp, hexec⟩ := h t hq
-  exact ⟨s, hp, unroll_bigstep b c k s t hexec⟩
-
-/-- Combined VC + unrolling: prove q ⇒ sp(unroll_k, p), get [* p *] while [* q *].
-    This is the main user-facing theorem for while loops. -/
-theorem vc_while_sound {b : State → Prop} {c : Stmt} {k : Nat}
-    {p q : State → Prop}
-    (hvc : ∀ t, q t → sp (unroll_while b c k) p t) :
-    [* p *] (Stmt.whileDo b c) [* q *] := by
-  apply unroll_sound b c k p q
-  exact vc_sound hvc
-
--- ============================================
--- Invariant-Based While Loop VC
--- ============================================
-
-/-- **Invariant-based VC for while loops.**
-
-  Alternative to bounded unrolling: the user provides an indexed
-  invariant `Inv : Nat → State → Prop` and proves three VCs:
-
-  1. `hPre`:  Inv 0 ⊆ P  (initial invariant within precondition)
-  2. `hBody`: ∀ i, Inv(i+1) ⇒ sp(S, Inv i ∧ B)  (body preserves invariant)
-  3. `hPost`: Q ⊆ (¬B ∧ ∃ i, Inv i)  (postcondition within exit states)
-
-  **Key advantage over bounded unrolling**: the body VC is proved
-  *once for all i*, so proof size is constant regardless of iteration count.
-  This also handles loops with a parametric bound (e.g., `while x < n`),
-  which bounded unrolling cannot express. -/
-theorem vc_while_inv_sound
-    {B : State → Prop} {S : Stmt}
-    {P Q : State → Prop} {Inv : Nat → State → Prop}
-    (hPre : ∀ s, Inv 0 s → P s)
-    (hBody : ∀ i, ∀ t, Inv (i + 1) t → sp S (fun s => Inv i s ∧ B s) t)
-    (hPost : ∀ t, Q t → ¬B t ∧ ∃ i, Inv i t) :
-    [* P *] (Stmt.whileDo B S) [* Q *] :=
-  consequence hPre (while_intro_paper (fun i => vc_sound (hBody i))) hPost
 
 end Incorrectness
