@@ -1,6 +1,10 @@
 # Lean / Lake build artifacts
 .lake/build/
 .lake/packages/
+.lake/config/
+*.olean
+*.olean.trace
+*.olean.lock
 
 # OS / editor
 .DS_Store
@@ -8,5 +12,10 @@
 *.tmp
 .vscode/
 .claude/
+
+# Reference materials (not source)
+*.pdf
+Incorrectness.txt
+reverse-hoare.txt
 
 proposal.tex
