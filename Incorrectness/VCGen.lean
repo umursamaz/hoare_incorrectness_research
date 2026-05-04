@@ -5,19 +5,72 @@ open Language
 open Incorrectness
 open Lean Elab Tactic
 
+-- ============================================
+-- Nat-Existential Elimination Lemmas
+-- ============================================
+-- These are the simp-set used by `il_close` to eliminate the
+-- `∃ v : Nat` quantifiers that emerge after `sp_assign_nat` is
+-- applied and `State.update` is unfolded. They are pure logical
+-- lemmas about `∃ v : Nat`, independent of any SP machinery.
+
+namespace Incorrectness
+
+/-- Trivial elimination: an unused Nat existential is the body itself. -/
+theorem exists_nat_const {p : Prop} : (∃ _ : Nat, p) ↔ p :=
+  ⟨fun ⟨_, h⟩ => h, fun h => ⟨0, h⟩⟩
+
+/-- Eliminate when `v` is determined by an equation `v = a`. -/
+theorem exists_nat_eq_and {p : Nat → Prop} {a : Nat} :
+    (∃ v, v = a ∧ p v) ↔ p a := ⟨fun ⟨_, rfl, hp⟩ => hp, fun hp => ⟨a, rfl, hp⟩⟩
+
+theorem exists_nat_and_eq {p : Nat → Prop} {a : Nat} :
+    (∃ v, p v ∧ v = a) ↔ p a := ⟨fun ⟨_, hp, rfl⟩ => hp, fun hp => ⟨a, hp, rfl⟩⟩
+
+theorem exists_nat_eq_and' {p : Nat → Prop} {a : Nat} :
+    (∃ v, a = v ∧ p v) ↔ p a := ⟨fun ⟨_, rfl, hp⟩ => hp, fun hp => ⟨a, rfl, hp⟩⟩
+
+theorem exists_nat_and_eq' {p : Nat → Prop} {a : Nat} :
+    (∃ v, p v ∧ a = v) ↔ p a := ⟨fun ⟨_, hp, rfl⟩ => hp, fun hp => ⟨a, hp, rfl⟩⟩
+
+/-- Eliminate when `v` appears inside an addition (typical for `x := x + k`). -/
+theorem exists_and_eq_add {p : Nat → Prop} {n k : Nat} :
+    (∃ v, p v ∧ n = v + k) ↔ n ≥ k ∧ p (n - k) := by
+  constructor
+  · rintro ⟨v, hp, heq⟩
+    exact ⟨by omega, by rwa [show n - k = v from by omega]⟩
+  · rintro ⟨hge, hp⟩
+    exact ⟨n - k, hp, by omega⟩
+
+theorem exists_and_add_eq {p : Nat → Prop} {n k : Nat} :
+    (∃ v, p v ∧ v + k = n) ↔ n ≥ k ∧ p (n - k) := by
+  constructor
+  · rintro ⟨v, hp, heq⟩
+    exact ⟨by omega, by rwa [show n - k = v from by omega]⟩
+  · rintro ⟨hge, hp⟩
+    exact ⟨n - k, hp, by omega⟩
+
+end Incorrectness
+
 /-!
 # VC Generation Tactics for Incorrectness Logic
 
 This file provides Lean tactics that automate the repetitive parts
-of VC-based IL proofs:
+of VC-based IL proofs. The tactics are organized in dependency order
+(helpers first, dispatchers last):
 
-1. `state_ext` — proves state equalities by pointwise case analysis
-2. `il_vc` — sets up the VC proof structure (apply vc_sound + intro + simp)
-3. `il_vc_while` — sets up VC for while loops with bounded unrolling
+## Setup helpers (used by automation tactics below)
+- `state_ext`        — proves state equalities by pointwise case analysis
+- `il_vc`            — sets up a loop-free VC proof
+- `il_vc_while`      — sets up a bounded-unrolling VC proof
+- `il_close`         — closes a goal after SP unfolding
 
-These tactics eliminate the manual `funext y; unfold State.update;
-by_cases hy : y = "x" <;> simp [hy, ...]` pattern that appears
-in every assignment-related VC proof.
+## Specialized provers
+- `incorrectness_auto_while N`        — bounded unrolling, explicit k
+- `incorrectness_auto_while_search`   — bounded unrolling, k=1..10 search
+- `incorrectness_auto_inv <inv>`      — invariant-hint, parametric loops
+
+## Unified dispatcher (top-level entry point)
+- `incorrectness_auto` — tries loop-free first, then bounded while search
 -/
 
 -- ============================================
@@ -57,59 +110,149 @@ elab_rules : tactic
                              sp_ite', sp_assume', sp_assert']))
 
 -- ============================================
--- Invariant-Based While VC Tactics
+-- Closing Helper: il_close
 -- ============================================
 
-/-- Sets up the body VC for invariant-based while loop proofs.
-    After `apply vc_while_inv_sound`, each body goal has the form
-    `∀ i t, Inv (i+1) t → sp S (Inv i ∧ B) t`.
-    This tactic introduces variables and unfolds sp. -/
-elab "il_vc_inv_body" : tactic => do
-  evalTactic (← `(tactic| intro _ _))
-  evalTactic (← `(tactic| simp only [sp_skip', sp_assign', sp_seq',
-                           sp_ite', sp_assume', sp_assert']))
+/-- Atomic close: simp_all with our lemma set, then try omega, then assert
+    no remaining goals. Used as the leaf of `il_close`'s disjunction-tree
+    enumeration. -/
+elab "il_close_atom" : tactic => do
+  evalTactic (← `(tactic|
+    (simp_all (config := { decide := true })
+      [State.update, exists_nat_const, exists_nat_eq_and, exists_nat_and_eq,
+       exists_nat_eq_and', exists_nat_and_eq',
+       exists_and_eq_add, exists_and_add_eq]
+     <;> try omega
+     all_goals done)))
+
+/-- Reusable closer used after SP unfolding. Enumerates left/right paths
+    through up to three levels of nested disjunctions (handles sequences
+    of if-then-else and bounded-unrolling unfolds), trying `il_close_atom`
+    at each leaf. -/
+elab "il_close" : tactic => do
+  evalTactic (← `(tactic| first
+    | il_close_atom
+    | (left; il_close_atom)
+    | (right; il_close_atom)
+    | (left; left; il_close_atom)
+    | (left; right; il_close_atom)
+    | (right; left; il_close_atom)
+    | (right; right; il_close_atom)
+    | (left; left; left; il_close_atom)
+    | (left; left; right; il_close_atom)
+    | (left; right; left; il_close_atom)
+    | (left; right; right; il_close_atom)
+    | (right; left; left; il_close_atom)
+    | (right; left; right; il_close_atom)
+    | (right; right; left; il_close_atom)
+    | (right; right; right; il_close_atom)))
 
 -- ============================================
--- Automated IL Prover
+-- Bounded While Automation
 -- ============================================
 
-/-- **Automated Incorrectness Logic prover for loop-free programs.**
+/-- **Bounded while auto with explicit k.**
 
-  Strategy:
-  1. Reduce IL triple to VC via `vc_sound`
-  2. Unfold SP definitions
-  3. Convert `∃ s : State` to `∃ v : Nat` via `sp_assign_elim`
-  4. Simplify state accesses via `simp_all [State.update]`
-  5. Close arithmetic with `omega`
+  `incorrectness_auto_while N` proves an IL triple of the form
+  `[P] while B do S [Q]` by unrolling the loop exactly `N` times,
+  unfolding all SP definitions, and closing with `il_close`.
 
-  Handles: skip, assign, seq, assume, assert, if-then-else.
-  Does NOT handle while loops (use `il_vc_while` or `vc_while_inv_sound`). -/
-elab "incorrectness_auto" : tactic => do
-  -- Phase 1: Reduce IL triple to verification condition
+  Use this when you know the maximum iteration count statically
+  (analogous to a fixed-bound C `for` loop).
+
+  Example: `[x = 0] while x < 3 do x := x+1 [x = 3]` is closed by
+  `incorrectness_auto_while 3`. -/
+syntax "incorrectness_auto_while" num : tactic
+elab_rules : tactic
+  | `(tactic| incorrectness_auto_while $k) => do
+    evalTactic (← `(tactic| apply vc_while_sound (k := $k)))
+    evalTactic (← `(tactic| intro _ _))
+    evalTactic (← `(tactic| simp only [unroll_while, sp_skip', sp_assign_nat,
+                             sp_seq', sp_ite', sp_assume', sp_assert']))
+    evalTactic (← `(tactic| il_close))
+
+/-- **Bounded while auto with k-search (1..10).**
+
+  `incorrectness_auto_while_search` tries `incorrectness_auto_while N`
+  for `N = 0, 1, 2, ..., 10` and uses the first one that succeeds.
+
+  Use when you don't want to specify the bound manually. Cost: at most
+  11 attempts; most fail fast. -/
+elab "incorrectness_auto_while_search" : tactic => do
+  evalTactic (← `(tactic| first
+    | incorrectness_auto_while 0
+    | incorrectness_auto_while 1
+    | incorrectness_auto_while 2
+    | incorrectness_auto_while 3
+    | incorrectness_auto_while 4
+    | incorrectness_auto_while 5
+    | incorrectness_auto_while 6
+    | incorrectness_auto_while 7
+    | incorrectness_auto_while 8
+    | incorrectness_auto_while 9
+    | incorrectness_auto_while 10))
+
+-- ============================================
+-- Unified Dispatcher: incorrectness_auto
+-- ============================================
+
+/-- **Automated Incorrectness Logic prover (unified).**
+
+  This is the single top-level tactic users should reach for. It tries
+  in order:
+
+  1. **Loop-free path:** `apply vc_sound` + introduce hypotheses,
+     then either `assumption` (when `Q` matches the SP exactly) or
+     `simp` + `il_close` (the standard case for skip/assign/seq/if/
+     assume/assert).
+  2. **Bounded while path:** if the program contains a while loop,
+     fall back to `incorrectness_auto_while_search` (k=0..10).
+
+  For loops with a parametric or large bound, use
+  `incorrectness_auto_inv <inv>` directly with a user-provided
+  indexed invariant — that case requires human input and is not
+  attempted by this dispatcher. -/
+elab "incorrectness_auto_lf" : tactic => do
   evalTactic (← `(tactic| apply vc_sound))
   evalTactic (← `(tactic| intro _ _))
-  -- Try exact match before any rewriting (handles q = sp c p)
-  try evalTactic (← `(tactic| assumption))
-  catch _ =>
-  -- Phase 2: Unfold SP to Nat-existential form (sp_assign_nat is the key)
-  evalTactic (← `(tactic| simp only [sp_skip', sp_assign_nat, sp_seq',
-                           sp_ite', sp_assume', sp_assert']))
-  -- Phase 3: Simplify state accesses + eliminate existentials + close
   evalTactic (← `(tactic| first
-    | (simp_all (config := { decide := true })
-        [State.update, exists_nat_const, exists_nat_eq_and, exists_nat_and_eq,
-         exists_nat_eq_and', exists_nat_and_eq',
-         exists_and_eq_add, exists_and_add_eq]
-       <;> try omega)
-    | (left
-       simp_all (config := { decide := true })
-        [State.update, exists_nat_const, exists_nat_eq_and, exists_nat_and_eq,
-         exists_nat_eq_and', exists_nat_and_eq',
-         exists_and_eq_add, exists_and_add_eq]
-       <;> try omega)
-    | (right
-       simp_all (config := { decide := true })
-        [State.update, exists_nat_const, exists_nat_eq_and, exists_nat_and_eq,
-         exists_nat_eq_and', exists_nat_and_eq',
-         exists_and_eq_add, exists_and_add_eq]
-       <;> try omega)))
+    | assumption
+    | (simp only [sp_skip', sp_assign_nat, sp_seq',
+                  sp_ite', sp_assume', sp_assert'];
+       il_close)))
+
+elab "incorrectness_auto" : tactic => do
+  evalTactic (← `(tactic| first
+    | incorrectness_auto_lf
+    | incorrectness_auto_while_search))
+
+-- ============================================
+-- Invariant-Hint While Automation
+-- ============================================
+
+/-- **Invariant-hint while auto.**
+
+  `incorrectness_auto_inv <invariant>` applies `vc_while_inv_sound`
+  with the user-provided indexed invariant, then attempts to close
+  the three resulting subgoals (hPre, hBody, hPost) using `il_close`.
+
+  Use when the loop has a parametric or unknown bound, but you can
+  describe it with an indexed invariant `Inv : Nat → State → Prop`.
+
+  Example: `[x=0 ∧ n>0] while x<n do x:=x+1 [x=n ∧ n>0]` is closed by
+  `incorrectness_auto_inv (fun i s => s "x" = i ∧ i ≤ s "n" ∧ s "n" > 0)`. -/
+syntax "incorrectness_auto_inv" term : tactic
+elab_rules : tactic
+  | `(tactic| incorrectness_auto_inv $inv) => do
+    evalTactic (← `(tactic| apply vc_while_inv_sound (Inv := $inv)))
+    evalTactic (← `(tactic|
+      all_goals (first
+        | il_close
+        | (intro _ _;
+           simp only [sp_skip', sp_assign_nat, sp_seq',
+                      sp_ite', sp_assume', sp_assert'];
+           il_close)
+        | (intro _ _ _;
+           simp only [sp_skip', sp_assign_nat, sp_seq',
+                      sp_ite', sp_assume', sp_assert'];
+           il_close))))
