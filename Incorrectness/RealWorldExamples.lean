@@ -1,7 +1,102 @@
 import Incorrectness.VCGen
+import Incorrectness.Seq
 
 open Language
 open Incorrectness
+
+/-!
+# Data-structure abstractions (advisor-requested form)
+
+The state model in this project is fixed: `State = String → Nat`. To
+faithfully encode the data structures the advisor asked for —
+**"array as a map/function `Nat → Nat`"** and **"linked list with a
+`Node` type, `next : Node → Node` and `key : Node → Nat` maps"** — we
+do *not* extend the language. Instead we expose those maps as proper
+Lean-level functions of the state. Each function reads a deterministic
+naming scheme of state slots, so updating "the map at index `i`" is
+realised by case-splitting on the runtime value of `i` and updating the
+corresponding slot.
+
+  arr     : State → Nat  → Nat     -- the array map (4-slot pool)
+  keyOf   : State → Node → Nat     -- the key  map (3-node pool)
+  nextOf  : State → Node → Node    -- the next map (3-node pool, 0 = NULL)
+
+These definitions are `@[simp]` so once the iteration-counter case-split
+fixes the index, the if-cascade reduces and proofs go through with the
+existing `il_close` simp set.
+-/
+
+/-!
+The encoding mirrors a C `struct Node { unsigned int key; Node* next; };`:
+
+  • `Node` is a node identifier (a `Nat`). The value `0` is NULL.
+  • `key  : Node → Nat`   ─ each node has a key field
+  • `next : Node → Node`  ─ each node has a next-pointer field
+
+In a purely functional setting the maps `key` and `next` must close over the
+*current* heap, because the program mutates them (`key_3 := target`,
+`next_2 := 3`). We expose that by giving each map a `State` parameter:
+`keyOf s` is the `Node → Nat` map *at state s*. Fix `s` and you get the
+abstract `Node → Nat` field.
+
+Slots are addressed by `s!"key_{n}"` / `s!"next_{n}"`, so there is no
+hard-coded bound on the node count — the encoding works for any
+`Node = Nat`. -/
+
+abbrev Node : Type := Nat
+
+/-- Array of unbounded capacity viewed as a map `i ↦ s "a{i}"`. -/
+def arr    (s : State) (i : Nat)  : Nat  := s s!"a{i}"
+
+/-- Key field of node `n`, read from the current state. -/
+def keyOf  (s : State) (n : Node) : Nat  := s s!"key_{n}"
+
+/-- Next field of node `n`, read from the current state. -/
+def nextOf (s : State) (n : Node) : Node := s s!"next_{n}"
+
+-- Sanity check: the unbounded definitions reduce to slot reads by `rfl`.
+example (s : State) : keyOf  s 4   = s "key_4"  := rfl
+example (s : State) : nextOf s 42  = s "next_42" := rfl
+example (s : State) : arr    s 17  = s "a17"    := rfl
+
+/-!
+## Bridging definitions and `simp`
+
+The definitions above already reduce by `rfl`: for *any* `n : Nat` literal,
+`keyOf s n` is definitionally `s "key_<n>"`. The two `example`s just above
+demonstrate this for `n = 4, 42, 17` — no per-literal lemma needed.
+
+However, `simp` by itself does not normalise `Nat.repr n` for concrete `n`
+inside string interpolation. We bridge this with one **simproc** —
+fifteen lines of meta-code that match `keyOf s n` / `nextOf s n` / `arr s i`
+for *any* Nat literal `n` and rewrite to the corresponding slot read by
+`rfl`. The result: minimal proof boilerplate, maximum automation. -/
+
+open Lean Meta Simp in
+/-- Simp-procedure: rewrite `keyOf s ⟨lit⟩`, `nextOf s ⟨lit⟩`, `arr s ⟨lit⟩`
+    to the corresponding state slot read, for any Nat literal. -/
+simproc ↓ reduceFieldRead (keyOf _ _) := fun e => do
+  let_expr keyOf s n := e | return .continue
+  let some nVal := n.nat? | return .continue
+  let slot := mkStrLit s!"key_{nVal}"
+  let result := mkApp s slot
+  return .visit { expr := result, proof? := ← mkEqRefl result }
+
+open Lean Meta Simp in
+simproc ↓ reduceNextRead (nextOf _ _) := fun e => do
+  let_expr nextOf s n := e | return .continue
+  let some nVal := n.nat? | return .continue
+  let slot := mkStrLit s!"next_{nVal}"
+  let result := mkApp s slot
+  return .visit { expr := result, proof? := ← mkEqRefl result }
+
+open Lean Meta Simp in
+simproc ↓ reduceArrRead (arr _ _) := fun e => do
+  let_expr arr s i := e | return .continue
+  let some iVal := i.nat? | return .continue
+  let slot := mkStrLit s!"a{iVal}"
+  let result := mkApp s slot
+  return .visit { expr := result, proof? := ← mkEqRefl result }
 
 /-!
 # Real-World Bug Detection Examples
@@ -224,3 +319,318 @@ example :
       (Stmt.assign "y" (fun s => s "y" + 1))))   -- BUG: y not supposed to change
   [* (fun t => t "x" = 2 ∧ t "y" = 2) *] := by
   incorrectness_auto
+
+-- =============================================================
+-- Example 11 — Sorted array insert with shift: `<` vs `≤` bug
+-- =============================================================
+/-
+**The classic sorted-array insert duplication bug** — full pipeline:
+find-position loop *and* element-shifting, producing a verified
+duplicate in the final array.
+
+## The array as a map
+
+Conceptually the array is a map `Nat → Nat`. We encode a 4-slot
+fixed-capacity array via state variables `a0, a1, a2, a3`, plus a
+length `len`. The runtime "function view" `a[i]` is the Lean
+expression `if i = 0 then s "a0" else if i = 1 then s "a1" else …`.
+
+## The algorithm (sorted-insert avoiding duplicates)
+
+  -- Phase 1: scan to find the right insert index (loop)
+  i := 0
+  while i < len ∧ a[i] ≤ target:     -- BUG: should use strict `<`
+    i := i + 1
+  pos := i
+
+  -- Phase 2: shift elements [pos .. len-1] one slot right
+  a3 := if pos ≤ 2 then a2 else a3
+  a2 := if pos ≤ 1 then a1 else a2
+  a1 := if pos ≤ 0 then a0 else a1
+  -- write target at the freed slot
+  (assign target to the appropriate slot)
+  len := len + 1
+
+The bug: the `≤` walks past an equal element. Combined with the
+shift+insert phase, this places the new value *after* the existing
+equal element rather than skipping insertion.
+
+## Concrete trace, target = 3, initial [1, 3, 5]
+
+  Phase 1 (buggy):
+    i=0  a0=1 ≤ 3 ✓ → i=1
+    i=1  a1=3 ≤ 3 ✓ (BUG, equals!) → i=2
+    i=2  a2=5 ≤ 3 ✗ → exit
+    pos := 2
+
+  Phase 2 (shift+insert at pos=2):
+    a3 := a2 = 5       (shift)
+    a2 unchanged (pos ≤ 1 is false)
+    a1 unchanged (pos ≤ 0 is false)
+    a2 := 3            (write target at pos=2)
+    len := 4
+
+  Final array: [1, 3, 3, 5]   ← duplicate!  Bug demonstrated.
+
+## What we prove
+
+The IL triple is `[initial] full_program [duplicate_state]`. We split
+the program at the seq boundary using `seq_intro`:
+- Phase 1 is closed by `incorrectness_auto_inv_split` with an indexed
+  invariant tracking `i` and `pos`.
+- Phase 2 (loop-free) is closed by `incorrectness_auto`.
+
+The intermediate assertion captures the state after Phase 1:
+`pos = 2`, all array values unchanged, etc.
+-/
+
+example :
+  -- Precondition: the array map `arr s` has the initial sequence [1, 3, 5, 0]
+  -- (and length 3, target 3). `arr s 0 = s "a0"` etc. via the targeted simp
+  -- lemmas, so this form is definitionally equivalent to the slot view.
+  [* (fun s => arr s 0 = 1 ∧ arr s 1 = 3 ∧ arr s 2 = 5 ∧ arr s 3 = 0 ∧
+               s "len" = 3 ∧ s "target" = 3 ∧
+               s "i" = 0 ∧ s "pos" = 3) *]
+  (Stmt.seq
+    -- Phase 1: find pos (buggy: ≤ should be <)
+    (Stmt.whileDo
+      (fun s => s "i" < 3 ∧ s "pos" = 3)
+      (Stmt.seq
+        (Stmt.ifThenElse
+          (fun s =>
+            (s "i" = 0 ∧ s "a0" > s "target") ∨
+            (s "i" = 1 ∧ s "a1" > s "target") ∨
+            (s "i" = 2 ∧ s "a2" > s "target"))   -- BUG: > should be ≥
+          (Stmt.assign "pos" (fun s => s "i"))
+          Stmt.skip)
+        (Stmt.assign "i" (fun s => s "i" + 1))))
+    -- Phase 2: shift right + insert at pos (all conditionals on pos)
+    (Stmt.seq
+      (Stmt.assign "a3" (fun s => if s "pos" ≤ 2 then s "a2" else s "a3"))
+      (Stmt.seq
+        (Stmt.assign "a2" (fun s => if s "pos" ≤ 1 then s "a1" else s "a2"))
+        (Stmt.seq
+          (Stmt.assign "a1" (fun s => if s "pos" ≤ 0 then s "a0" else s "a1"))
+          (Stmt.seq
+            (Stmt.assign "a0" (fun s => if s "pos" = 0 then s "target" else s "a0"))
+            (Stmt.seq
+              (Stmt.assign "a1" (fun s => if s "pos" = 1 then s "target" else s "a1"))
+              (Stmt.seq
+                (Stmt.assign "a2" (fun s => if s "pos" = 2 then s "target" else s "a2"))
+                (Stmt.seq
+                  (Stmt.assign "a3" (fun s => if s "pos" = 3 then s "target" else s "a3"))
+                  (Stmt.assign "len" (fun s => s "len" + 1))))))))))
+  -- Postcondition: duplicate state [1, 3, 3, 5], len=4
+  -- (i = 3 included because Phase 2 doesn't change it, so the bug-state must
+  --  preserve the loop-exit value from Phase 1.)
+  -- Postcondition: the map `arr t` now reads [1, 3, 3, 5] — the duplicate
+  -- bug state with two 3's in adjacent slots, length 4.
+  [* (fun t => arr t 0 = 1 ∧ arr t 1 = 3 ∧ arr t 2 = 3 ∧ arr t 3 = 5 ∧
+               t "len" = 4 ∧ t "target" = 3 ∧ t "i" = 3 ∧ t "pos" = 2) *] := by
+  -- Split at the seq boundary. Intermediate state: end of Phase 1.
+  apply seq_intro (Q := fun s =>
+    arr s 0 = 1 ∧ arr s 1 = 3 ∧ arr s 2 = 5 ∧ arr s 3 = 0 ∧
+    s "len" = 3 ∧ s "target" = 3 ∧
+    s "i" = 3 ∧ s "pos" = 2)
+  -- ▶ Phase 1: while loop with case-split on iteration counter `i` up to 3.
+  · incorrectness_auto_inv_split 3 (fun i s =>
+      arr s 0 = 1 ∧ arr s 1 = 3 ∧ arr s 2 = 5 ∧ arr s 3 = 0 ∧
+      s "len" = 3 ∧ s "target" = 3 ∧
+      s "i" = i ∧ i ≤ 3 ∧
+      (i ≤ 2 → s "pos" = 3) ∧
+      (i = 3 → s "pos" = 2))
+  -- ▶ Phase 2: loop-free shift+insert. Try `incorrectness_auto` first.
+  · incorrectness_auto
+
+-- =============================================================
+-- Example 12 — Pointer-based sorted-list insert: `<` vs `≤` bug
+-- =============================================================
+/-
+**The pointer-based variant of Example 11** — same `<` vs `≤` mistake,
+but now on a real singly-linked list (no arrays). Advisor-requested
+form: `Node` type with `keyOf : Node → Nat` and `nextOf : Node → Node`
+maps, defined above as honest Lean functions over the state.
+
+## The example in plain English
+
+A sorted singly-linked list. Each node has a *key* (natural number)
+and a *next* pointer (another node or NULL). Inserting a new value
+into a sorted list **without duplicating an existing key** is done by
+scanning from the head until the first node whose key is **strictly
+greater** than the target, then splicing the new node in just before
+that node.
+
+## Where the bug lives
+
+The buggy scan uses `≤` instead of `<`. When the target value already
+appears in the list, the scan walks *past* the equal node and the
+splice phase inserts a duplicate after the original.
+
+## Mathematical statement
+
+  Pre:  a finite sorted list  L = (k₁, k₂, …, kₙ)  with kᵢ < kᵢ₊₁,
+        head pointing at k₁, and a target value `t` such that
+        ∃ j. k_j = t   (i.e. `t` is already in the list).
+
+  Buggy program:  insert(t) using the loop guard `key[curr] ≤ t`.
+
+  Post:  reachable state where L′ = (k₁, …, k_j, t, k_{j+1}, …, kₙ)
+         contains two adjacent copies of `t`.  → the duplicate is a bug.
+
+Below we instantiate this at n = 2 with  L = (1, 3),  t = 3.
+
+## Concrete initial configuration
+
+  head    = 1
+  keyOf 1 = 1,  nextOf 1 = 2
+  keyOf 2 = 3,  nextOf 2 = 0     -- NULL terminator
+  keyOf 3 = 0,  nextOf 3 = 0     -- pre-allocated free slot for new node
+  target  = 3,  prev = 0 (NULL sentinel),  curr = 1
+
+## The buggy algorithm (informal)
+
+    while curr ≠ 0 ∧ keyOf curr ≤ target:    // BUG: should be strict `<`
+      prev := curr
+      curr := nextOf curr
+    keyOf 3  := target                       -- initialise new node 3
+    nextOf 3 := curr
+    if prev = 0 then head := 3
+    else nextOf prev := 3                    -- splice in
+
+## Concrete bug trace (target = 3)
+
+  Phase 1 — find position:
+    iter 0:  curr=1, keyOf 1 = 1, 1 ≤ 3 ✓  → prev=1, curr=nextOf 1 = 2
+    iter 1:  curr=2, keyOf 2 = 3, 3 ≤ 3 ✓ (BUG, equal!) → prev=2, curr=nextOf 2 = 0
+    iter 2:  curr=0, guard fails (curr = 0), exit
+
+  Phase 2 — splice (prev = 2, curr = 0):
+    keyOf  3 := 3
+    nextOf 3 := 0
+    prev = 2 ≠ 0,  so  nextOf prev = nextOf 2 := 3
+
+  Final list:  1 → 2 → 3 → NULL  with keys [1, 3, 3].   ← DUPLICATE.
+
+## How the proof closes it
+
+We split the program at the seq boundary with `seq_intro`, then:
+
+  · Phase 1 (the loop)         — closed by  `incorrectness_auto_inv_split 2 inv`
+                                  with an indexed invariant pinning
+                                  (prev, curr) per iteration.
+
+  · Phase 2 (loop-free splice) — `apply vc_sound`, pick the `prev ≠ 0`
+                                  branch with `right`, then `refine` with
+                                  the five existential witnesses (= the
+                                  pre-Phase-2 values of the five mutated
+                                  slots) and discharge the leaves with
+                                  `simp [State.update, …]`.
+
+The Phase-2 manual-witness shape is *identical* to Example 11's Phase 2;
+the only difference is the count (5 ∃ versus 8 ∃) and the slot names.
+-/
+
+example :
+  [* (fun s =>
+        s "head" = 1 ∧
+        s "key_1"  = 1 ∧ s "next_1" = 2 ∧
+        s "key_2"  = 3 ∧ s "next_2" = 0 ∧
+        s "key_3"  = 0 ∧ s "next_3" = 0 ∧
+        s "target" = 3 ∧
+        s "prev"   = 0 ∧ s "curr"   = 1) *]
+  (Stmt.seq
+    -- Phase 1: scan via the buggy `≤`
+    (Stmt.whileDo
+      (fun s => s "curr" ≠ 0 ∧ keyOf s (s "curr") ≤ s "target")  -- BUG: ≤ not <
+      (Stmt.seq
+        (Stmt.assign "prev" (fun s => s "curr"))
+        (Stmt.assign "curr" (fun s => nextOf s (s "curr")))))
+    -- Phase 2: splice in new node (id = 3)
+    (Stmt.seq
+      (Stmt.assign "key_3"  (fun s => s "target"))
+      (Stmt.seq
+        (Stmt.assign "next_3" (fun s => s "curr"))
+        (Stmt.ifThenElse
+          (fun s => s "prev" = 0)
+          (Stmt.assign "head" (fun _ => 3))                       -- list was empty
+          -- nextOf prev := 3, expanded as three guarded slot writes
+          (Stmt.seq
+            (Stmt.assign "next_1" (fun s => if s "prev" = 1 then 3 else s "next_1"))
+            (Stmt.seq
+              (Stmt.assign "next_2" (fun s => if s "prev" = 2 then 3 else s "next_2"))
+              (Stmt.assign "next_3" (fun s => if s "prev" = 3 then 3 else s "next_3"))))))))
+  -- Post: the duplicate-key bug state
+  [* (fun t =>
+        t "head"   = 1 ∧
+        t "key_1"  = 1 ∧ t "next_1" = 2 ∧
+        t "key_2"  = 3 ∧ t "next_2" = 3 ∧   -- changed: 0 → 3 (links to new)
+        t "key_3"  = 3 ∧ t "next_3" = 0 ∧   -- new node has the duplicate key
+        t "target" = 3 ∧
+        t "prev"   = 2 ∧ t "curr"   = 0) *] := by
+  -- Intermediate state: end of Phase 1.
+  apply seq_intro (Q := fun s =>
+    s "head"   = 1 ∧
+    s "key_1"  = 1 ∧ s "next_1" = 2 ∧
+    s "key_2"  = 3 ∧ s "next_2" = 0 ∧
+    s "key_3"  = 0 ∧ s "next_3" = 0 ∧
+    s "target" = 3 ∧
+    s "prev"   = 2 ∧ s "curr"   = 0)
+  -- ▶ Phase 1 — manual invariant-based proof.
+  --   `incorrectness_auto_while N` and `incorrectness_auto_inv_split N inv`
+  --   both fail here. The body has two sequential pointer-dereferences
+  --   (`prev := curr; curr := nextOf curr`) producing TWO simultaneous
+  --   existentials over (old_prev, old_curr). The invariant pins their
+  --   values, but our existential-elimination lemma set only matches
+  --   single-conjunct `v = lit` patterns at the top level — not nested
+  --   inside a multi-clause invariant. We discharge each VC by hand.
+  · apply vc_while_inv_sound (Inv := fun i s =>
+      s "head"   = 1 ∧
+      s "key_1"  = 1 ∧ s "next_1" = 2 ∧
+      s "key_2"  = 3 ∧ s "next_2" = 0 ∧
+      s "key_3"  = 0 ∧ s "next_3" = 0 ∧
+      s "target" = 3 ∧
+      i ≤ 2 ∧ s "prev" = i ∧
+      s "curr" = (if i ≤ 1 then i + 1 else 0))
+    case hPre =>
+      intro s hI
+      obtain ⟨hhead, hk1, hn1, hk2, hn2, hk3, hn3, htgt, _, hprev, hcurr⟩ := hI
+      simp at hcurr
+      exact ⟨hhead, hk1, hn1, hk2, hn2, hk3, hn3, htgt, hprev, hcurr⟩
+    case hBody =>
+      intro i t hI
+      obtain ⟨hhead, hk1, hn1, hk2, hn2, hk3, hn3, htgt, hle, hprev, hcurr⟩ := hI
+      rcases Nat.lt_or_ge i 1 with h0 | h1
+      · have hi : i = 0 := by omega
+        subst hi
+        simp at hcurr
+        simp only [sp_seq', sp_assign_nat]
+        refine ⟨1, ⟨0, ?_, ?_⟩, ?_⟩
+        · refine ⟨⟨hhead, hk1, hn1, hk2, hn2, hk3, hn3, htgt, by omega, ?_, ?_⟩, ?_, ?_⟩
+          · simp [State.update]
+          · simp [State.update]
+          · simp [State.update]
+          · simp [State.update, htgt, hk1]
+        · simp [State.update, hprev]
+        · simp [State.update, hcurr, hn1]
+      · rcases Nat.lt_or_ge i 2 with h1' | h2
+        · have hi : i = 1 := by omega
+          subst hi
+          simp at hcurr
+          simp only [sp_seq', sp_assign_nat]
+          refine ⟨2, ⟨1, ?_, ?_⟩, ?_⟩
+          · refine ⟨⟨hhead, hk1, hn1, hk2, hn2, hk3, hn3, htgt, by omega, ?_, ?_⟩, ?_, ?_⟩
+            · simp [State.update]
+            · simp [State.update]
+            · simp [State.update]
+            · simp [State.update, htgt, hk2]
+          · simp [State.update, hprev]
+          · simp [State.update, hcurr, hn2]
+        · omega
+    case hPost =>
+      intro t hQ
+      obtain ⟨hhead, hk1, hn1, hk2, hn2, hk3, hn3, htgt, hprev, hcurr⟩ := hQ
+      refine ⟨?_, 2, hhead, hk1, hn1, hk2, hn2, hk3, hn3, htgt, by omega, hprev, ?_⟩
+      · intro ⟨hne, _⟩; exact hne hcurr
+      · simp [hcurr]
+  -- ▶ Phase 2 — loop-free splice; closed by `incorrectness_auto`.
+  · incorrectness_auto

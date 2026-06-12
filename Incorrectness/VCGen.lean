@@ -113,17 +113,40 @@ elab_rules : tactic
 -- Closing Helper: il_close
 -- ============================================
 
-/-- Atomic close: simp_all with our lemma set, then try omega, then assert
-    no remaining goals. Used as the leaf of `il_close`'s disjunction-tree
-    enumeration. -/
+/-- Atomic close: simp_all with our lemma set, then a search over up to
+    three levels of `split` (for nested `if-then-else` in the goal), each
+    followed by `omega`. The `done` guards ensure failure propagates so
+    the caller's `first | ... | ...` enumeration can try alternatives. -/
 elab "il_close_atom" : tactic => do
   evalTactic (← `(tactic|
-    (simp_all (config := { decide := true })
-      [State.update, exists_nat_const, exists_nat_eq_and, exists_nat_and_eq,
-       exists_nat_eq_and', exists_nat_and_eq',
-       exists_and_eq_add, exists_and_add_eq]
-     <;> try omega
-     all_goals done)))
+    first
+      | (simp_all (config := { decide := true })
+          [State.update, exists_nat_const, exists_nat_eq_and, exists_nat_and_eq,
+           exists_nat_eq_and', exists_nat_and_eq',
+           exists_and_eq_add, exists_and_add_eq]
+         <;> try omega
+         all_goals done)
+      | (simp_all (config := { decide := true })
+          [State.update, exists_nat_const, exists_nat_eq_and, exists_nat_and_eq,
+           exists_nat_eq_and', exists_nat_and_eq',
+           exists_and_eq_add, exists_and_add_eq]
+         <;> split
+         <;> try omega
+         all_goals done)
+      | (simp_all (config := { decide := true })
+          [State.update, exists_nat_const, exists_nat_eq_and, exists_nat_and_eq,
+           exists_nat_eq_and', exists_nat_and_eq',
+           exists_and_eq_add, exists_and_add_eq]
+         <;> split <;> split
+         <;> try omega
+         all_goals done)
+      | (simp_all (config := { decide := true })
+          [State.update, exists_nat_const, exists_nat_eq_and, exists_nat_and_eq,
+           exists_nat_eq_and', exists_nat_and_eq',
+           exists_and_eq_add, exists_and_add_eq]
+         <;> split <;> split <;> split
+         <;> try omega
+         all_goals done)))
 
 /-- Reusable closer used after SP unfolding. Enumerates left/right paths
     through up to three levels of nested disjunctions (handles sequences
@@ -256,3 +279,71 @@ elab_rules : tactic
            simp only [sp_skip', sp_assign_nat, sp_seq',
                       sp_ite', sp_assume', sp_assert'];
            il_close))))
+
+-- ============================================
+-- Bounded Case-Split for hBody (handles if-then-else in loop guard)
+-- ============================================
+
+/-- Builds the nested `rcases Nat.lt_or_ge` chain that case-splits on
+    `x ≤ bound`, producing one branch per possible value `k, k+1, ..., bound`
+    and `il_close`-ing each. Used to parametrise `il_close_split_at` by an
+    arbitrary user-supplied bound. -/
+private partial def mkSplitTac (x : Ident) (k : Nat) (bound : Nat) :
+    TacticM (TSyntax ``Lean.Parser.Tactic.tacticSeq) := do
+  if k ≥ bound then
+    `(tacticSeq|
+        have hieq : $x = $(quote bound) := by omega
+        subst hieq
+        il_close)
+  else
+    let inner ← mkSplitTac x (k+1) bound
+    `(tacticSeq|
+        rcases Nat.lt_or_ge $x $(quote (k+1)) with hcase | hcase
+        · have hieq : $x = $(quote k) := by omega
+          subst hieq
+          il_close
+        · $inner)
+
+/-- **Bounded case-split closer (parametric).**
+
+    `il_close_split_at x N` case-splits on the Nat `x` for values
+    `0, 1, ..., N` and closes each branch with `il_close`. The branch
+    `x = N` assumes the caller has placed `x ≤ N` in context (otherwise
+    that branch's `omega` will fail unless `il_close` resolves the goal
+    by contradiction).
+
+    The `first | il_close | …` wrapper means: try to close without splitting
+    first; only fall back to the case-split if that fails. -/
+syntax "il_close_split_at" ident num : tactic
+elab_rules : tactic
+  | `(tactic| il_close_split_at $x:ident $n:num) => do
+    let splitTac ← mkSplitTac x 0 n.getNat
+    evalTactic (← `(tactic| first | il_close | $splitTac))
+
+/-- **Invariant-hint while auto with iteration case-split (parametric).**
+
+  `incorrectness_auto_inv_split N inv` is like `incorrectness_auto_inv`,
+  but when the body VC cannot close directly it case-splits on the
+  iteration counter for values `0, 1, ..., N` and closes each case.
+  Use this for loops whose guard contains an `if`-expression whose
+  discriminant is the iteration counter (e.g. sorted-insert position
+  search). `N` must be at least the loop's maximum iteration count
+  permitted by the invariant.
+
+  Use when `incorrectness_auto_inv` fails on a body containing an
+  index-dependent match/if. -/
+syntax "incorrectness_auto_inv_split" num term : tactic
+elab_rules : tactic
+  | `(tactic| incorrectness_auto_inv_split $n:num $inv:term) => do
+    evalTactic (← `(tactic|
+      (apply vc_while_inv_sound (Inv := $inv)
+       all_goals (first
+         | il_close
+         | (intro _ _;
+            simp only [sp_skip', sp_assign_nat, sp_seq',
+                       sp_ite', sp_assume', sp_assert'];
+            il_close)
+         | (intro i _ _;
+            simp only [sp_skip', sp_assign_nat, sp_seq',
+                       sp_ite', sp_assume', sp_assert'];
+            il_close_split_at i $n)))))
