@@ -18,4 +18,5 @@
 Incorrectness.txt
 reverse-hoare.txt
 
-proposal.tex
+# LaTeX sources (reports, presentations — not project source)
+*.tex
