@@ -519,15 +519,14 @@ We split the program at the seq boundary with `seq_intro`, then:
                                   with an indexed invariant pinning
                                   (prev, curr) per iteration.
 
-  · Phase 2 (loop-free splice) — `apply vc_sound`, pick the `prev ≠ 0`
-                                  branch with `right`, then `refine` with
-                                  the five existential witnesses (= the
-                                  pre-Phase-2 values of the five mutated
-                                  slots) and discharge the leaves with
-                                  `simp [State.update, …]`.
+  · Phase 2 (loop-free splice) — closed by  `incorrectness_auto`.
 
-The Phase-2 manual-witness shape is *identical* to Example 11's Phase 2;
-the only difference is the count (5 ∃ versus 8 ∃) and the slot names.
+Both phases are discharged by the *general* automation: Phase 1 by the same
+invariant tactic that closes the array loop of Example 11 (only the invariant
+differs), and Phase 2 by the unified loop-free dispatcher. The pointer body's
+two simultaneous existentials (over the pre-values of `prev` and `curr`) are
+back-solved by `il_close`'s AC-normalising fallback (`il_close_hard`), which
+floats each invariant-pinned equation next to its binding `∃`.
 -/
 
 example :
@@ -575,15 +574,14 @@ example :
     s "key_3"  = 0 ∧ s "next_3" = 0 ∧
     s "target" = 3 ∧
     s "prev"   = 2 ∧ s "curr"   = 0)
-  -- ▶ Phase 1 — manual invariant-based proof.
-  --   `incorrectness_auto_while N` and `incorrectness_auto_inv_split N inv`
-  --   both fail here. The body has two sequential pointer-dereferences
+  -- ▶ Phase 1 — closed in ONE LINE by the general invariant tactic.
+  --   The body has two sequential pointer-dereferences
   --   (`prev := curr; curr := nextOf curr`) producing TWO simultaneous
-  --   existentials over (old_prev, old_curr). The invariant pins their
-  --   values, but our existential-elimination lemma set only matches
-  --   single-conjunct `v = lit` patterns at the top level — not nested
-  --   inside a multi-clause invariant. We discharge each VC by hand.
-  · apply vc_while_inv_sound (Inv := fun i s =>
+  --   existentials over (old_prev, old_curr), both pinned by the invariant.
+  --   `il_close`'s AC-fallback (`il_close_hard`) back-solves those buried
+  --   witnesses, so the *same* tactic that closes the array loop (Example 11)
+  --   closes this pointer loop too — only the invariant differs.
+  · incorrectness_auto_inv_split 2 (fun i s =>
       s "head"   = 1 ∧
       s "key_1"  = 1 ∧ s "next_1" = 2 ∧
       s "key_2"  = 3 ∧ s "next_2" = 0 ∧
@@ -591,46 +589,5 @@ example :
       s "target" = 3 ∧
       i ≤ 2 ∧ s "prev" = i ∧
       s "curr" = (if i ≤ 1 then i + 1 else 0))
-    case hPre =>
-      intro s hI
-      obtain ⟨hhead, hk1, hn1, hk2, hn2, hk3, hn3, htgt, _, hprev, hcurr⟩ := hI
-      simp at hcurr
-      exact ⟨hhead, hk1, hn1, hk2, hn2, hk3, hn3, htgt, hprev, hcurr⟩
-    case hBody =>
-      intro i t hI
-      obtain ⟨hhead, hk1, hn1, hk2, hn2, hk3, hn3, htgt, hle, hprev, hcurr⟩ := hI
-      rcases Nat.lt_or_ge i 1 with h0 | h1
-      · have hi : i = 0 := by omega
-        subst hi
-        simp at hcurr
-        simp only [sp_seq', sp_assign_nat]
-        refine ⟨1, ⟨0, ?_, ?_⟩, ?_⟩
-        · refine ⟨⟨hhead, hk1, hn1, hk2, hn2, hk3, hn3, htgt, by omega, ?_, ?_⟩, ?_, ?_⟩
-          · simp [State.update]
-          · simp [State.update]
-          · simp [State.update]
-          · simp [State.update, htgt, hk1]
-        · simp [State.update, hprev]
-        · simp [State.update, hcurr, hn1]
-      · rcases Nat.lt_or_ge i 2 with h1' | h2
-        · have hi : i = 1 := by omega
-          subst hi
-          simp at hcurr
-          simp only [sp_seq', sp_assign_nat]
-          refine ⟨2, ⟨1, ?_, ?_⟩, ?_⟩
-          · refine ⟨⟨hhead, hk1, hn1, hk2, hn2, hk3, hn3, htgt, by omega, ?_, ?_⟩, ?_, ?_⟩
-            · simp [State.update]
-            · simp [State.update]
-            · simp [State.update]
-            · simp [State.update, htgt, hk2]
-          · simp [State.update, hprev]
-          · simp [State.update, hcurr, hn2]
-        · omega
-    case hPost =>
-      intro t hQ
-      obtain ⟨hhead, hk1, hn1, hk2, hn2, hk3, hn3, htgt, hprev, hcurr⟩ := hQ
-      refine ⟨?_, 2, hhead, hk1, hn1, hk2, hn2, hk3, hn3, htgt, by omega, hprev, ?_⟩
-      · intro ⟨hne, _⟩; exact hne hcurr
-      · simp [hcurr]
   -- ▶ Phase 2 — loop-free splice; closed by `incorrectness_auto`.
   · incorrectness_auto

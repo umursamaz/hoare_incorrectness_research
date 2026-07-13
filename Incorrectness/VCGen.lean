@@ -170,6 +170,43 @@ elab "il_close" : tactic => do
     | (right; right; left; il_close_atom)
     | (right; right; right; il_close_atom)))
 
+/-- **Heavyweight fallback closer.**
+
+    AC-normalises `∧` (`and_assoc/and_comm/and_left_comm`) so a determining
+    equation `v = c` buried deep inside a multi-clause invariant floats next
+    to its binding `∃`, letting `exists_eq_*'` eliminate the witness. This is
+    what a *cheap* `simp_all` cannot do: it only matches top-level `v = c`
+    conjuncts. Needed for loop bodies with several simultaneous existentials
+    over pinned variables (e.g. `prev := curr; curr := next curr`).
+
+    AC-normalisation is deliberately kept OUT of `il_close_atom`: run on every
+    leaf it explodes large invariants (the array example times out). It is a
+    fallback, invoked by `il_close_hard` only after the cheap path fails. -/
+elab "il_close_ac" : tactic => do
+  evalTactic (← `(tactic|
+    first
+      | (simp_all (config := { decide := true })
+          [State.update, exists_nat_const, exists_nat_eq_and, exists_nat_and_eq,
+           exists_nat_eq_and', exists_nat_and_eq', exists_and_eq_add, exists_and_add_eq,
+           and_assoc, and_comm, and_left_comm, exists_eq_left', exists_eq_right']
+         <;> try omega
+         all_goals done)
+      | (simp_all (config := { decide := true })
+          [State.update, exists_nat_const, exists_nat_eq_and, exists_nat_and_eq,
+           exists_nat_eq_and', exists_nat_and_eq', exists_and_eq_add, exists_and_add_eq,
+           and_assoc, and_comm, and_left_comm, exists_eq_left', exists_eq_right']
+         <;> split
+         <;> try omega
+         all_goals done)))
+
+/-- **Two-tier closer.** Try the fast, AC-free `il_close` first; fall back to
+    the AC-heavy `il_close_ac` only when the cheap path fails. Used at the
+    leaves of the iteration case-split, where buried existentials arise. This
+    keeps the common case fast while extending coverage to pointer/array
+    bodies that need witness back-solving from a multi-clause invariant. -/
+elab "il_close_hard" : tactic => do
+  evalTactic (← `(tactic| first | il_close | il_close_ac))
+
 -- ============================================
 -- Bounded While Automation
 -- ============================================
@@ -294,14 +331,14 @@ private partial def mkSplitTac (x : Ident) (k : Nat) (bound : Nat) :
     `(tacticSeq|
         have hieq : $x = $(quote bound) := by omega
         subst hieq
-        il_close)
+        il_close_hard)
   else
     let inner ← mkSplitTac x (k+1) bound
     `(tacticSeq|
         rcases Nat.lt_or_ge $x $(quote (k+1)) with hcase | hcase
         · have hieq : $x = $(quote k) := by omega
           subst hieq
-          il_close
+          il_close_hard
         · $inner)
 
 /-- **Bounded case-split closer (parametric).**
