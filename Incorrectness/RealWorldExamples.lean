@@ -112,22 +112,33 @@ In standard usage the user writes a postcondition describing the
 violating that intent is reachable. When the proof succeeds, a bug
 exists; when it fails, the bug pattern doesn't manifest in our model.
 
-Each example is closed by a single tactic call (the unified
-`incorrectness_auto` dispatcher), which internally tries the
-loop-free path first and falls back to bounded while search.
+Examples 1–10 are each closed by a single call to the unified
+`incorrectness_auto` dispatcher (loop-free path first, then bounded
+while search). The data-structure examples 11–13 use the invariant
+tactics instead — `incorrectness_auto_inv_split N inv` for a concrete
+iteration bound (11, 12) and the fully parametric `incorrectness_auto_inv`
+for a symbolic bound (13) — composed with `seq_intro` where the program
+has a find-then-mutate phase split.
 
 The bug categories covered here:
 
-| # | Category                            | Loop? |
-|---|-------------------------------------|-------|
-| 1 | `<` vs `≤` in withdrawal check      | no    |
-| 2 | `≥` vs `>` in discount threshold    | no    |
-| 3 | `>` vs `≥` in age verification      | no    |
-| 4 | Logical AND vs OR in access control | no    |
-| 5 | Off-by-one: loop-counter starts at 0 | yes  |
-| 6 | `≤` vs `<` in loop guard            | yes   |
-| 7 | Loop runs one extra time            | yes   |
-| 8 | Two-stage validation, second stage skipped | no |
+| #  | Category                                    | Loop? | Tactic |
+|----|---------------------------------------------|-------|--------|
+| 1  | `<` vs `≤` in withdrawal check              | no    | `incorrectness_auto` |
+| 2  | `≥` vs `>` in discount threshold            | no    | `incorrectness_auto` |
+| 3  | `>` vs `≥` in age verification              | no    | `incorrectness_auto` |
+| 4  | Logical AND vs OR in access control         | no    | `incorrectness_auto` |
+| 5  | Off-by-one: loop-counter starts at 0        | yes   | `incorrectness_auto` |
+| 6  | `≤` vs `<` in loop guard                     | yes   | `incorrectness_auto` |
+| 7  | Loop runs one extra time                    | yes   | `incorrectness_auto` |
+| 8  | Two-stage validation, second stage skipped  | no    | `incorrectness_auto` |
+| 9  | Sequence of assertions that miss a case     | no    | `incorrectness_auto` |
+| 10 | Nested loops where outer escapes too early  | yes   | `incorrectness_auto` |
+| 11 | Sorted-array insert, `<` vs `≤` (concrete)  | yes   | `incorrectness_auto_inv_split` |
+| 12 | Pointer linked-list insert, `<` vs `≤`      | yes   | `incorrectness_auto_inv_split` |
+| 13 | Linked-list scan, `<` vs `≤`, symbolic `N`  | yes   | `incorrectness_auto_inv` |
+| 14 | Sorted-array position search, `>` vs `≥`    | yes   | `incorrectness_auto_inv_split` |
+| 15 | Linked-list position scan, `≤` vs `<`       | yes   | `incorrectness_auto_inv_split` |
 -/
 
 -- =============================================================
@@ -591,3 +602,144 @@ example :
       s "curr" = (if i ≤ 1 then i + 1 else 0))
   -- ▶ Phase 2 — loop-free splice; closed by `incorrectness_auto`.
   · incorrectness_auto
+
+-- =============================================================
+-- Example 13 — SYMBOLIC-length list scan: `<` vs `≤` bug, parametric in N
+-- =============================================================
+/-
+**The point of this example.** Examples 11 and 12 fix a *concrete* number of
+list/array cells, so the loop runs a statically known number of times and we
+close it with `incorrectness_auto_inv_split N` (which enumerates the iteration
+counter `0,1,…,N`). Here the list length is a **symbolic parameter `N`** — the
+loop runs an unknown-at-compile-time number of times — and we still close the
+triple with **no concrete integer bound**, using the parametric
+`incorrectness_auto_inv`. This is the direct answer to "can you handle a
+general N, not just a fixed example?".
+
+## The example in plain English
+
+A sorted singly-linked list of `N` nodes at positions `0, 1, …, N-1` (node `j`
+has key `j`; `next` of node `j` is `j+1`; position `N` is the past-the-end /
+NULL boundary). We scan from the head with a `prev`/`curr` pointer pair to walk
+to the end of the list.
+
+## Where the bug lives
+
+The scan uses `curr ≤ N` where it should use `curr < N`. With `<`, the walk
+stops with `curr = N` (one past the last valid index `N-1`, i.e. exactly at the
+NULL boundary — correct). With the buggy `≤`, it takes **one extra step**:
+`curr` overshoots to `N+1` and `prev` lands on `N` (the NULL boundary itself).
+A subsequent splice through `prev = N` writes *past the end of the list* — a
+classic off-by-one / out-of-bounds bug, the pointer analogue of Example 12's
+duplicate.
+
+## Mathematical statement (parametric in N)
+
+  Pre:   curr = 0,  prev = 0        (N is an arbitrary symbolic Nat)
+  Loop:  while curr ≤ N do  prev := curr;  curr := curr + 1
+  Post:  curr = N + 1  ∧  prev = N   (the reachable over-run bug state)
+
+## Why one line closes it
+
+The indexed invariant `Inv i s := curr = i ∧ prev = i-1 ∧ i ≤ N+1` is
+inductive: the body's two simultaneous existentials (old `curr`, old `prev`)
+are pinned by `Inv i` to the *symbolic* values `i` and `i-1`. `il_close`'s
+AC-normalising fallback (`il_close_hard`) floats those pinned equations next
+to their binding `∃` and eliminates the witnesses — **uniformly in `i`**, with
+no case-split on the iteration count. Hence a genuinely parametric proof.
+-/
+example :
+  [* (fun s => s "curr" = 0 ∧ s "prev" = 0) *]
+  (Stmt.whileDo
+    (fun s => s "curr" ≤ s "N")                      -- BUG: ≤ should be <
+    (Stmt.seq
+      (Stmt.assign "prev" (fun s => s "curr"))
+      (Stmt.assign "curr" (fun s => s "curr" + 1))))
+  [* (fun t => t "curr" = t "N" + 1 ∧ t "prev" = t "N") *] := by
+  -- SYMBOLIC N: no concrete iteration bound — the parametric invariant tactic
+  -- closes it uniformly in the iteration counter.
+  incorrectness_auto_inv (fun i s => s "curr" = i ∧ s "prev" = i - 1 ∧ i ≤ s "N" + 1)
+
+-- =============================================================
+-- Example 14 — Sorted-array position search: `>` vs `≥` off-by-one
+-- =============================================================
+/-
+A sorted array `[1, 3, 5]` and a target `3` that already appears. To find
+where `target` belongs, the code scans left-to-right for the first cell whose
+value is *greater than or equal to* the target; that index is the correct
+insertion position (here `1`, immediately in front of the existing `3`).
+
+## Where the bug lives
+
+The scan tests `a[i] > target` where it should test `a[i] ≥ target`. Since the
+existing `3` is not strictly greater than the target, the scan walks past it
+and only stops at `5`, so the computed position `pos` overshoots to `2` instead
+of `1` — the position that inserts a duplicate after the original.
+
+## Mathematical statement
+
+  Pre:   a = [1, 3, 5],  target = 3,  i = 0,  pos = 3 (unset sentinel)
+  Loop:  while i < 3 ∧ pos = 3 do
+           if a[i] > target then pos := i;  i := i + 1
+  Post:  pos = 2   (the overshot, wrong insertion position)
+
+The loop runs a fixed ≤ 3 iterations, so the case-splitting invariant tactic
+enumerates the counter and closes each case.
+-/
+example :
+  [* (fun s => s "a0" = 1 ∧ s "a1" = 3 ∧ s "a2" = 5 ∧
+               s "target" = 3 ∧ s "i" = 0 ∧ s "pos" = 3) *]
+  (Stmt.whileDo
+    (fun s => s "i" < 3 ∧ s "pos" = 3)
+    (Stmt.seq
+      (Stmt.ifThenElse
+        (fun s =>
+          (s "i" = 0 ∧ s "a0" > s "target") ∨
+          (s "i" = 1 ∧ s "a1" > s "target") ∨
+          (s "i" = 2 ∧ s "a2" > s "target"))          -- BUG: > should be ≥
+        (Stmt.assign "pos" (fun s => s "i"))
+        Stmt.skip)
+      (Stmt.assign "i" (fun s => s "i" + 1))))
+  [* (fun t => t "a0" = 1 ∧ t "a1" = 3 ∧ t "a2" = 5 ∧ t "target" = 3 ∧
+               t "i" = 3 ∧ t "pos" = 2) *] := by
+  incorrectness_auto_inv_split 3 (fun i s =>
+    s "a0" = 1 ∧ s "a1" = 3 ∧ s "a2" = 5 ∧ s "target" = 3 ∧
+    s "i" = i ∧ i ≤ 3 ∧ (i ≤ 2 → s "pos" = 3) ∧ (i = 3 → s "pos" = 2))
+
+-- =============================================================
+-- Example 15 — Linked-list position scan: `≤` vs `<` off-by-one
+-- =============================================================
+/-
+A sorted singly-linked list with two nodes, keys `1 → 3` (node `1` then node
+`2`, with `next_2 = 0` as the NULL terminator), and a target `3` that already
+appears. A `prev`/`curr` pointer pair walks the list to find where `target`
+belongs: it should stop at the first node whose key is *not less than* the
+target.
+
+## Where the bug lives
+
+The scan guard is `key[curr] ≤ target` where it should be `key[curr] < target`.
+Since node `2`'s key equals the target, the buggy `≤` advances one node too
+far: `curr` runs off the end (to NULL, `0`) while `prev` lands on node `2` —
+the node holding the equal key. A splice through `prev` would insert a second
+`3`.
+
+## Mathematical statement
+
+  Pre:   keys 1 → 3 (nodes 1, 2),  target = 3,  prev = 0,  curr = 1
+  Loop:  while curr ≠ 0 ∧ key[curr] ≤ target do  prev := curr;  curr := next[curr]
+  Post:  prev = 2 ∧ curr = 0   (the scan overran the equal node)
+-/
+example :
+  [* (fun s => s "key_1" = 1 ∧ s "next_1" = 2 ∧ s "key_2" = 3 ∧ s "next_2" = 0 ∧
+               s "target" = 3 ∧ s "prev" = 0 ∧ s "curr" = 1) *]
+  (Stmt.whileDo
+    (fun s => s "curr" ≠ 0 ∧ keyOf s (s "curr") ≤ s "target")   -- BUG: ≤ should be <
+    (Stmt.seq
+      (Stmt.assign "prev" (fun s => s "curr"))
+      (Stmt.assign "curr" (fun s => nextOf s (s "curr")))))
+  [* (fun t => t "key_1" = 1 ∧ t "next_1" = 2 ∧ t "key_2" = 3 ∧ t "next_2" = 0 ∧
+               t "target" = 3 ∧ t "prev" = 2 ∧ t "curr" = 0) *] := by
+  incorrectness_auto_inv_split 2 (fun i s =>
+    s "key_1" = 1 ∧ s "next_1" = 2 ∧ s "key_2" = 3 ∧ s "next_2" = 0 ∧
+    s "target" = 3 ∧ i ≤ 2 ∧ s "prev" = i ∧ s "curr" = (if i ≤ 1 then i + 1 else 0))

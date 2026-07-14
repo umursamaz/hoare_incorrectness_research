@@ -62,12 +62,16 @@ of VC-based IL proofs. The tactics are organized in dependency order
 - `state_ext`        — proves state equalities by pointwise case analysis
 - `il_vc`            — sets up a loop-free VC proof
 - `il_vc_while`      — sets up a bounded-unrolling VC proof
-- `il_close`         — closes a goal after SP unfolding
+- `il_close`         — closes a goal after SP unfolding (fast, AC-free)
+- `il_close_ac`      — AC-normalising fallback: back-solves existentials whose
+                       pinning equation is buried in a multi-clause invariant
+- `il_close_hard`    — two-tier `first | il_close | il_close_ac`
 
 ## Specialized provers
 - `incorrectness_auto_while N`        — bounded unrolling, explicit k
 - `incorrectness_auto_while_search`   — bounded unrolling, k=1..10 search
 - `incorrectness_auto_inv <inv>`      — invariant-hint, parametric loops
+- `incorrectness_auto_inv_split N inv`— invariant-hint + iteration case-split
 
 ## Unified dispatcher (top-level entry point)
 - `incorrectness_auto` — tries loop-free first, then bounded while search
@@ -307,15 +311,15 @@ elab_rules : tactic
     evalTactic (← `(tactic| apply vc_while_inv_sound (Inv := $inv)))
     evalTactic (← `(tactic|
       all_goals (first
-        | il_close
+        | il_close_hard
         | (intro _ _;
            simp only [sp_skip', sp_assign_nat, sp_seq',
                       sp_ite', sp_assume', sp_assert'];
-           il_close)
+           il_close_hard)
         | (intro _ _ _;
            simp only [sp_skip', sp_assign_nat, sp_seq',
                       sp_ite', sp_assume', sp_assert'];
-           il_close))))
+           il_close_hard))))
 
 -- ============================================
 -- Bounded Case-Split for hBody (handles if-then-else in loop guard)
